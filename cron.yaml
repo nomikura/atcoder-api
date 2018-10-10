@@ -1,0 +1,4 @@
+cron:
+- description: "new daily summary job"
+  url: /update
+  schedule: every 5 minutes synchronized
