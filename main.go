@@ -32,7 +32,7 @@ func init() {
 	// Todo: AtCoderを最初に1度呼ぶ
 	r := gin.New()
 	r.GET("/update", Update)
-	r.GET("/json", Json)
+	r.GET("/contests", Json)
 	http.Handle("/", r)
 }
 
