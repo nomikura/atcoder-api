@@ -8,9 +8,13 @@ import (
 	"fmt"
 	"io/ioutil"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
+
+	"cloud.google.com/go/storage"
+	"google.golang.org/appengine/file"
 
 	"github.com/gin-gonic/gin"
 	"google.golang.org/appengine"
@@ -45,46 +49,140 @@ type AtCoderContest struct {
 	Rated     string
 }
 
-// TODO: ファイルIOをスタンダード環境でできるようにする。
+func (atcoder *AtCoder) FileIO(operate string) {
+	var r *http.Request = atcoder.Context.Request
+	var w http.ResponseWriter = atcoder.Context.Writer
+	ctx := appengine.NewContext(r)
 
-// gobとして書き込む
-func (atcoder *AtCoder) StoreGob(fileName string) {
-	var request *http.Request = atcoder.Context.Request
-	context := appengine.NewContext(request)
+	// デフォルトのバケットを指定する(App Engineのコンテストから取得できる)
+	bucket, err := file.DefaultBucketName(ctx)
+	if err != nil {
+		log.Errorf(ctx, "Faild to get default GCS bucket name: %v", err)
+	}
 
+	// clientをつくる
+	client, err := storage.NewClient(ctx)
+	if err != nil {
+		log.Errorf(ctx, "Faild to create client: %v", err)
+	}
+	defer client.Close()
+
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+
+	buf := &bytes.Buffer{}
+	d := &demo{
+		w:          buf,
+		ctx:        ctx,
+		client:     client,
+		bucket:     client.Bucket(bucket),
+		bucketName: bucket,
+	}
+
+	fileName := "demo-testfile-go"
+
+	if operate == "write" {
+		// コンテストデータをバイナリにエンコード
+		var binaryData []byte
+		Encode(atcoder.Contests, &binaryData)
+		// ファイルに書き込む
+		d.createFile(fileName, binaryData)
+		log.Infof(ctx, "Write to file")
+	} else if operate == "read" {
+		// ファイルをバイナリで読み込む
+		var binaryData []byte
+		d.readFile(fileName, &binaryData)
+		// バイナリをコンテストデータにデコード
+		Decode(binaryData, &atcoder.Contests)
+		log.Infof(ctx, "Read file")
+	} else {
+		log.Infof(ctx, "operation is not read and write")
+	}
+
+	if d.failed {
+		w.WriteHeader(http.StatusInternalServerError)
+		buf.WriteTo(w)
+	} else {
+		w.WriteHeader(http.StatusOK)
+		buf.WriteTo(w)
+	}
+}
+
+//[START write]
+func (d *demo) createFile(fileName string, byteDataToWrite []byte) {
+	wc := d.bucket.Object(fileName).NewWriter(d.ctx)
+	wc.ContentType = "text/plain"
+	wc.Metadata = map[string]string{
+		"x-goog-meta-foo": "foo",
+		"x-goog-meta-bar": "bar",
+	}
+	d.cleanUp = append(d.cleanUp, fileName)
+
+	// 書き込む
+	if _, err := wc.Write(byteDataToWrite); err != nil {
+		d.errorf("createFile: unable to write data to bucket %q, file %q: %v", d.bucketName, fileName, err)
+		return
+	}
+
+	// ファイル閉じてるのかな？これがないと書き込めない
+	if err := wc.Close(); err != nil {
+		d.errorf("createFile: unable to close bucket %q, file %q: %v", d.bucketName, fileName, err)
+		return
+	}
+}
+
+//[END write]
+
+//[START read]
+func (d *demo) readFile(fileName string, data *[]byte) {
+	// ファイルを開く
+	rc, err := d.bucket.Object(fileName).NewReader(d.ctx)
+	if err != nil {
+		d.errorf("readFile: unable to open file from bucket %q, file %q: %v", d.bucketName, fileName, err)
+		return
+	}
+	defer rc.Close()
+
+	// データを読み込む
+	slurp, err := ioutil.ReadAll(rc)
+	if err != nil {
+		d.errorf("readFile: unable to read data from bucket %q, file %q: %v", d.bucketName, fileName, err)
+		return
+	}
+
+	*data = slurp
+}
+
+//[END read]
+
+// dataをbyteArrayにエンコードする
+func Encode(data interface{}, byteArray *[]byte) {
 	buffer := new(bytes.Buffer)
 	encoder := gob.NewEncoder(buffer)
-	// err := encoder.Encode(data)
-	err := encoder.Encode(atcoder.Contests)
+	err := encoder.Encode(data)
 	if err != nil {
-		log.Errorf(context, "Faild to encode(StoreGob): %v", err)
+		// log.Print("encode: ", err)
 	}
 
-	err = ioutil.WriteFile(fileName, buffer.Bytes(), 0600)
-	if err != nil {
-		log.Errorf(context, "Faild to write file(StoreGob): %v", err)
-	}
+	*byteArray = buffer.Bytes()
 }
 
-// gobを読み出す
-func (atcoder *AtCoder) LoadGob(fileName string) {
-	var request *http.Request = atcoder.Context.Request
-	context := appengine.NewContext(request)
-
-	raw, err := ioutil.ReadFile(fileName)
-	if err != nil {
-		log.Errorf(context, "Faild to read file(LoadGob): %v", err)
-	}
-	buffer := bytes.NewBuffer(raw)
+// byteArrayをdataにデコードする(dataはポインタ型)
+func Decode(byteArray []byte, data interface{}) {
+	buffer := bytes.NewBuffer(byteArray)
 	dec := gob.NewDecoder(buffer)
-	// err = dec.Decode(data)
-	err = dec.Decode(atcoder.Contests)
+	err := dec.Decode(data)
 	if err != nil {
-		log.Errorf(context, "Faild to decode(LoadGob): %v", err)
+		// log.Print("decode: ", err)
 	}
 }
 
-func (atcoder *AtCoder) GetAllContest(context *gin.Context) {
+func (d *demo) errorf(format string, args ...interface{}) {
+	d.failed = true
+	fmt.Fprintln(d.w, fmt.Sprintf(format, args...))
+	log.Errorf(d.ctx, format, args...)
+}
+
+func (atcoder *AtCoder) SetContestData(context *gin.Context) {
 	// atcoder.HttpClient = client
 	atcoder.Context = context
 
@@ -99,7 +197,11 @@ func (atcoder *AtCoder) GetAllContest(context *gin.Context) {
 		atcoder.Contests = append(atcoder.Contests, ParseSum(rawContest))
 	}
 
-	atcoder.StoreGob("contests")
+	sort.Slice(atcoder.Contests, func(i, j int) bool { return atcoder.Contests[i].StartTime < atcoder.Contests[j].StartTime })
+
+	// ファイルに書き込む
+	atcoder.FileIO("write")
+	// atcoder.StoreGob("contests")
 }
 
 // 予定されたコンテストデータを取得する
@@ -284,3 +386,44 @@ func (atcoder *AtCoder) GetRawContestFromTable(tableSelection *goquery.Selection
 		atcoder.RawContests = append(atcoder.RawContests, rawContest)
 	})
 }
+
+// gobとして書き込む
+/*
+func (atcoder *AtCoder) StoreGob(fileName string) {
+	var request *http.Request = atcoder.Context.Request
+	context := appengine.NewContext(request)
+
+	buffer := new(bytes.Buffer)
+	encoder := gob.NewEncoder(buffer)
+	// err := encoder.Encode(data)
+	err := encoder.Encode(atcoder.Contests)
+	if err != nil {
+		log.Errorf(context, "Faild to encode(StoreGob): %v", err)
+	}
+
+	err = ioutil.WriteFile(fileName, buffer.Bytes(), 0600)
+	if err != nil {
+		log.Errorf(context, "Faild to write file(StoreGob): %v", err)
+	}
+}
+*/
+
+// gobを読み出す
+/*
+func (atcoder *AtCoder) LoadGob(fileName string) {
+	var request *http.Request = atcoder.Context.Request
+	context := appengine.NewContext(request)
+
+	raw, err := ioutil.ReadFile(fileName)
+	if err != nil {
+		log.Errorf(context, "Faild to read file(LoadGob): %v", err)
+	}
+	buffer := bytes.NewBuffer(raw)
+	dec := gob.NewDecoder(buffer)
+	// err = dec.Decode(data)
+	err = dec.Decode(atcoder.Contests)
+	if err != nil {
+		log.Errorf(context, "Faild to decode(LoadGob): %v", err)
+	}
+}
+*/
