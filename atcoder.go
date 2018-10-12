@@ -7,20 +7,25 @@ import (
 	"encoding/gob"
 	"fmt"
 	"io/ioutil"
-	"log"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/gin-gonic/gin"
+	"google.golang.org/appengine"
+	"google.golang.org/appengine/log"
+	"google.golang.org/appengine/urlfetch"
 
 	"github.com/PuerkitoBio/goquery"
 )
 
 // AtCoderのコンテスト情報を管理するモジュール
 type AtCoder struct {
-	Contests        []AtCoderContest
-	RawContests     []RawAtCoderContest
-	ContestDocument *goquery.Document
+	Contests    []AtCoderContest
+	RawContests []RawAtCoderContest
+	HttpClient  *http.Client
+	Context     *gin.Context
 }
 
 type RawAtCoderContest struct {
@@ -40,163 +45,86 @@ type AtCoderContest struct {
 	Rated     string
 }
 
-// 流れ
-func (atcoder *AtCoder) SetData() {
-	// goqueryが使える状態にする
-	ok := atcoder.SetContestDocument()
-	if !ok {
-		return
-	}
+// TODO: ファイルIOをスタンダード環境でできるようにする。
 
-	// 生コンテストデータ取得
-	ok = atcoder.SetRawContest()
-	if !ok {
-		return
-	}
+// gobとして書き込む
+func (atcoder *AtCoder) StoreGob(fileName string) {
+	var request *http.Request = atcoder.Context.Request
+	context := appengine.NewContext(request)
 
-	// コンテストデータ取得
-	ok = atcoder.SetContest()
-	if !ok {
-		return
-	}
-}
-
-// goqueryが使える状態にする
-func (atcoder *AtCoder) SetContestDocument() bool {
-	// GETリクエストを送る
-	response, err := http.Get("https://beta.atcoder.jp/contests/?lang=ja")
-	if err != nil {
-		log.Printf("failed GET request: %v", err)
-		return false
-	}
-	defer response.Body.Close()
-
-	// HTMLを読み込む
-	doc, err := goquery.NewDocumentFromReader(response.Body)
-	if err != nil {
-		fmt.Print(err)
-		return false
-	}
-
-	atcoder.ContestDocument = doc
-	return true
-}
-
-func (atcoder *AtCoder) SetRawContest() bool {
-	var tableSelection *goquery.Selection
-	atcoder.ContestDocument.Find("h3").Each(func(i int, s *goquery.Selection) {
-		if h3 := s.Text(); h3 == "予定されたコンテスト" {
-			tableSelection = s.Next()
-		}
-	})
-
-	// コンテストデータを取得
-	var rawContest []RawAtCoderContest
-	tableSelection.Find("div > table > tbody > tr").Each(func(i int, trSelection *goquery.Selection) {
-		// とりあえず文字列でテーブル情報を取得
-		var href string
-		var rawData [4]string
-		trSelection.Find("td").Each(func(i int, tdSelection *goquery.Selection) {
-			rawData[i] = tdSelection.Text()
-			if i == 1 {
-				href, _ = tdSelection.Find("a").Attr("href")
-			}
-		})
-		rawContest = append(rawContest, RawAtCoderContest{
-			StartTime: rawData[0],
-			Title:     rawData[1],
-			Duration:  rawData[2],
-			Rated:     rawData[3],
-			Path:      href,
-		})
-	})
-
-	atcoder.RawContests = rawContest
-
-	return true
-}
-
-func (atcoder *AtCoder) SetContest() bool {
-	var contests []AtCoderContest
-	for _, rawContest := range atcoder.RawContests {
-		contests = append(contests, atcoder.Parse(rawContest))
-	}
-	atcoder.Contests = contests
-	return true
-}
-
-func (atcoder *AtCoder) Parse(rawContest RawAtCoderContest) AtCoderContest {
-	// Durationを求める
-	str := strings.Replace(rawContest.Duration, ":", "h", 1) + "m"
-	tim, _ := time.ParseDuration(str)
-	duration := int64(tim.Seconds())
-
-	// StartTimeを求める
-	start := rawContest.StartTime
-	atoi := func(str string) int {
-		ret, _ := strconv.Atoi(str)
-		return ret
-	}
-	// [2018-09-22 21:00:00+0900]の形式で抜き出した時間を無理矢理Timeオブジェクトにする
-	year, month, day, hour, minute := atoi(start[:4]), atoi(start[5:7]), atoi(start[8:10]), atoi(start[11:13]), atoi(start[14:])
-	// 取得する時間はJSTなので、日本時間をTimeオブジェクトにするように処理する
-	jst, _ := time.LoadLocation("Asia/Tokyo")
-	startTime := time.Date(year, time.Month(month), day, hour, minute, 0, 0, jst)
-	unix := startTime.Unix()
-
-	return AtCoderContest{
-		Title:     rawContest.Title,
-		Path:      rawContest.Path,
-		StartTime: unix,
-		Duration:  duration,
-		Rated:     rawContest.Rated,
-	}
-}
-
-func (atcoder *AtCoder) WriteContestData() {
 	buffer := new(bytes.Buffer)
 	encoder := gob.NewEncoder(buffer)
+	// err := encoder.Encode(data)
 	err := encoder.Encode(atcoder.Contests)
 	if err != nil {
-		log.Print(err)
+		log.Errorf(context, "Faild to encode(StoreGob): %v", err)
 	}
-	err = ioutil.WriteFile("contest", buffer.Bytes(), 0600)
+
+	err = ioutil.WriteFile(fileName, buffer.Bytes(), 0600)
 	if err != nil {
-		log.Print(err)
+		log.Errorf(context, "Faild to write file(StoreGob): %v", err)
 	}
 }
 
-func (atcoder *AtCoder) ReadContestData() {
-	raw, err := ioutil.ReadFile("contest")
+// gobを読み出す
+func (atcoder *AtCoder) LoadGob(fileName string) {
+	var request *http.Request = atcoder.Context.Request
+	context := appengine.NewContext(request)
+
+	raw, err := ioutil.ReadFile(fileName)
 	if err != nil {
-		log.Print(err)
+		log.Errorf(context, "Faild to read file(LoadGob): %v", err)
 	}
 	buffer := bytes.NewBuffer(raw)
 	dec := gob.NewDecoder(buffer)
+	// err = dec.Decode(data)
 	err = dec.Decode(atcoder.Contests)
 	if err != nil {
-		log.Print()
+		log.Errorf(context, "Faild to decode(LoadGob): %v", err)
 	}
 }
 
-func sum() []AtCoderContest {
-	var nomi []AtCoderContest
-	nomi = append(nomi, AtCoderContest{Title: "hoge"})
+func (atcoder *AtCoder) GetAllContest(context *gin.Context) {
+	// atcoder.HttpClient = client
+	atcoder.Context = context
 
-	// GETリクエストを送る
-	response, err := http.Get("https://beta.atcoder.jp/contests/?lang=ja")
-	if err != nil {
-		log.Printf("failed GET request: %v", err)
-		return nomi
+	// 予定されたコンテストの生データを取得
+	atcoder.GetFutureContest()
+
+	// 過去のコンテストの生データを取得
+	atcoder.GetPastContest()
+
+	// 5. 生のコンテストデータをパースする
+	for _, rawContest := range atcoder.RawContests {
+		atcoder.Contests = append(atcoder.Contests, ParseSum(rawContest))
 	}
-	defer response.Body.Close()
 
-	// HTMLを読み込む
+	atcoder.StoreGob("contests")
+}
+
+// 予定されたコンテストデータを取得する
+func (atcoder *AtCoder) GetFutureContest() {
+	// var responseWriter http.ResponseWriter = atcoder.Context.Writer
+	var request *http.Request = atcoder.Context.Request
+
+	context := appengine.NewContext(request)
+	client := urlfetch.Client(context)
+
+	// 1. GETリクエスト
+	response, err := client.Get("https://beta.atcoder.jp/contests/?lang=ja")
+	time.Sleep(2 * time.Second)
+	if err != nil {
+		fmt.Print(err)
+		return
+	}
+
+	// 2. goqueryを使えるようにする
 	doc, err := goquery.NewDocumentFromReader(response.Body)
 	if err != nil {
 		fmt.Print(err)
 	}
 
+	// 3. 予定されたコンテストのテーブルを取得
 	var tableSelection *goquery.Selection
 	doc.Find("h3").Each(func(i int, s *goquery.Selection) {
 		if h3 := s.Text(); h3 == "予定されたコンテスト" {
@@ -204,35 +132,108 @@ func sum() []AtCoderContest {
 		}
 	})
 
-	// コンテストデータを取得
-	var rawContest []RawAtCoderContest
-	tableSelection.Find("div > table > tbody > tr").Each(func(i int, trSelection *goquery.Selection) {
-		// とりあえず文字列でテーブル情報を取得
-		var href string
-		var rawData [4]string
-		trSelection.Find("td").Each(func(i int, tdSelection *goquery.Selection) {
-			rawData[i] = tdSelection.Text()
-			if i == 1 {
-				href, _ = tdSelection.Find("a").Attr("href")
-			}
-		})
-		rawContest = append(rawContest, RawAtCoderContest{
-			StartTime: rawData[0],
-			Title:     rawData[1],
-			Duration:  rawData[2],
-			Rated:     rawData[3],
-			Path:      href,
-		})
-	})
+	// 4. 生のコンテストデータを取得
+	atcoder.GetRawContestFromTable(tableSelection)
 
-	var contests []AtCoderContest
-	for _, rawContest := range rawContest {
-		contests = append(contests, ParseSum(rawContest))
-	}
+	// 5. 生のコンテストデータをパースする
+	// for _, rawContest := range atcoder.RawContests {
+	// 	atcoder.Contests = append(atcoder.Contests, ParseSum(rawContest))
+	// }
 
-	return contests
 }
 
+// 過去のコンテストデータを取得する
+func (atcoder *AtCoder) GetPastContest() {
+	baseURL := "https://beta.atcoder.jp/contests/archive?lang=ja"
+	// 準備
+	var request *http.Request = atcoder.Context.Request
+	context := appengine.NewContext(request)
+	client := urlfetch.Client(context)
+
+	numberOfPage, ok := atcoder.GetNumberOfPage(baseURL)
+	// ページ番号の取得に失敗
+	if !ok {
+		log.Infof(context, "Faild to get number of page!!")
+		return
+	}
+
+	for page := 1; page <= numberOfPage; page++ {
+		// 1. GETリクエスト
+		response, err := client.Get(baseURL + "&page=" + strconv.Itoa(page))
+		time.Sleep(2 * time.Second)
+		if err != nil {
+			fmt.Print(err)
+			return
+		}
+
+		// 2. goqueryを使えるようにする
+		doc, err := goquery.NewDocumentFromReader(response.Body)
+		if err != nil {
+			fmt.Print(err)
+		}
+
+		// 3. 予定されたコンテストのテーブルを取得
+		var tableSelection *goquery.Selection = doc.Find("table")
+
+		// 4. 生のコンテストデータを取得
+		atcoder.GetRawContestFromTable(tableSelection)
+
+		// 5. 生のコンテストデータをパースする
+		// for _, rawContest := range atcoder.RawContests {
+		// 	atcoder.Contests = append(atcoder.Contests, ParseSum(rawContest))
+		// }
+	}
+
+}
+
+func (atcoder *AtCoder) GetNumberOfPage(baseURL string) (int, bool) {
+	var request *http.Request = atcoder.Context.Request
+
+	context := appengine.NewContext(request)
+	client := urlfetch.Client(context)
+
+	// 1. Getリクエスト
+	response, err := client.Get(baseURL)
+	time.Sleep(2 * time.Second)
+	if err != nil {
+		fmt.Print(err)
+		return 0, false
+	}
+
+	// 2. goqueryを使えるようにする
+	doc, err := goquery.NewDocumentFromReader(response.Body)
+	if err != nil {
+		fmt.Print(err)
+		return 0, false
+	}
+
+	// 3. 番号を取得
+	numberOfPage := 1
+	doc.Find("ul > li > a").Each(func(i int, s *goquery.Selection) {
+		href, exists := s.Attr("href")
+		// aタグにhrefが存在しない
+		if !exists {
+			return
+		}
+		// hrefに[page=]が含まれない
+		if !strings.Contains(href, "page=") {
+			return
+		}
+
+		// タグの中身を数値にできる
+		if page, err := strconv.Atoi(s.Text()); err == nil {
+			// log.Infof(context, "pageNumger(nomikura): %+v", page)
+			if page > numberOfPage {
+				numberOfPage = page
+			}
+		}
+
+	})
+	// log.Infof(context, "pageSize(nomikura): %+v", pageSize)
+	return numberOfPage, true
+}
+
+// 生のコンテストデータをパースする
 func ParseSum(rawContest RawAtCoderContest) AtCoderContest {
 	// Durationを求める
 	str := strings.Replace(rawContest.Duration, ":", "h", 1) + "m"
@@ -259,4 +260,27 @@ func ParseSum(rawContest RawAtCoderContest) AtCoderContest {
 		Duration:  duration,
 		Rated:     rawContest.Rated,
 	}
+}
+
+// 生のコンテストデータをセットする
+func (atcoder *AtCoder) GetRawContestFromTable(tableSelection *goquery.Selection) {
+	tableSelection.Find("div > table > tbody > tr").Each(func(i int, trSelection *goquery.Selection) {
+		// とりあえず文字列でテーブル情報を取得
+		var href string
+		var rawData [4]string
+		trSelection.Find("td").Each(func(i int, tdSelection *goquery.Selection) {
+			rawData[i] = tdSelection.Text()
+			if i == 1 {
+				href, _ = tdSelection.Find("a").Attr("href")
+			}
+		})
+		rawContest := RawAtCoderContest{
+			StartTime: rawData[0],
+			Title:     rawData[1],
+			Duration:  rawData[2],
+			Rated:     rawData[3],
+			Path:      href,
+		}
+		atcoder.RawContests = append(atcoder.RawContests, rawContest)
+	})
 }
