@@ -1,4 +1,4 @@
-# atcoder-api
+# AtCoder API(informal)
 
 ## [Contest](https://atcoder-api.appspot.com/contests)
 | Field            | Description                                                  |
