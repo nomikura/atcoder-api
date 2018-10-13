@@ -33,8 +33,8 @@ type AtCoder struct {
 }
 
 type RawAtCoderContest struct {
+	ID        string
 	Title     string
-	Path      string
 	StartTime string
 	Duration  string
 	Rated     string
@@ -42,11 +42,11 @@ type RawAtCoderContest struct {
 
 // AtCoderのコンテスト情報
 type AtCoderContest struct {
-	Title     string
-	Path      string
-	StartTime int64
-	Duration  int64
-	Rated     string
+	ID        string `json:"id"`
+	Title     string `json:"title"`
+	StartTime int64  `json:"startTimeSeconds"`
+	Duration  int64  `json:"durationSeconds"`
+	Rated     string `json:"ratedRange"`
 }
 
 func (atcoder *AtCoder) FileIO(operate string) {
@@ -357,7 +357,7 @@ func ParseSum(rawContest RawAtCoderContest) AtCoderContest {
 
 	return AtCoderContest{
 		Title:     rawContest.Title,
-		Path:      rawContest.Path,
+		ID:        rawContest.ID,
 		StartTime: unix,
 		Duration:  duration,
 		Rated:     rawContest.Rated,
@@ -381,49 +381,8 @@ func (atcoder *AtCoder) GetRawContestFromTable(tableSelection *goquery.Selection
 			Title:     rawData[1],
 			Duration:  rawData[2],
 			Rated:     rawData[3],
-			Path:      href,
+			ID:        href[10:],
 		}
 		atcoder.RawContests = append(atcoder.RawContests, rawContest)
 	})
 }
-
-// gobとして書き込む
-/*
-func (atcoder *AtCoder) StoreGob(fileName string) {
-	var request *http.Request = atcoder.Context.Request
-	context := appengine.NewContext(request)
-
-	buffer := new(bytes.Buffer)
-	encoder := gob.NewEncoder(buffer)
-	// err := encoder.Encode(data)
-	err := encoder.Encode(atcoder.Contests)
-	if err != nil {
-		log.Errorf(context, "Faild to encode(StoreGob): %v", err)
-	}
-
-	err = ioutil.WriteFile(fileName, buffer.Bytes(), 0600)
-	if err != nil {
-		log.Errorf(context, "Faild to write file(StoreGob): %v", err)
-	}
-}
-*/
-
-// gobを読み出す
-/*
-func (atcoder *AtCoder) LoadGob(fileName string) {
-	var request *http.Request = atcoder.Context.Request
-	context := appengine.NewContext(request)
-
-	raw, err := ioutil.ReadFile(fileName)
-	if err != nil {
-		log.Errorf(context, "Faild to read file(LoadGob): %v", err)
-	}
-	buffer := bytes.NewBuffer(raw)
-	dec := gob.NewDecoder(buffer)
-	// err = dec.Decode(data)
-	err = dec.Decode(atcoder.Contests)
-	if err != nil {
-		log.Errorf(context, "Faild to decode(LoadGob): %v", err)
-	}
-}
-*/
