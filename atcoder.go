@@ -349,7 +349,7 @@ func ParseSum(rawContest RawAtCoderContest) AtCoderContest {
 		return ret
 	}
 	// [2018-09-22 21:00:00+0900]の形式で抜き出した時間を無理矢理Timeオブジェクトにする
-	year, month, day, hour, minute := atoi(start[:4]), atoi(start[5:7]), atoi(start[8:10]), atoi(start[11:13]), atoi(start[14:])
+	year, month, day, hour, minute := atoi(start[:4]), atoi(start[5:7]), atoi(start[8:10]), atoi(start[11:13]), atoi(start[14:16])
 	// 取得する時間はJSTなので、日本時間をTimeオブジェクトにするように処理する
 	jst, _ := time.LoadLocation("Asia/Tokyo")
 	startTime := time.Date(year, time.Month(month), day, hour, minute, 0, 0, jst)
