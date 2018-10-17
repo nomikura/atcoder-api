@@ -6,6 +6,7 @@ import (
 	"context"
 	"io"
 	"net/http"
+	"time"
 
 	"cloud.google.com/go/storage"
 	"github.com/gin-gonic/gin"
@@ -56,6 +57,8 @@ func Update(context *gin.Context) {
 
 	atcoder := &AtCoder{}
 	atcoder.SetContestData(context)
+
+	context.String(http.StatusOK, "Finish update!!"+time.Now().String())
 	// responseContests = atcoder.Contests
 
 }
