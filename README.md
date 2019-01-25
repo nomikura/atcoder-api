@@ -1,4 +1,5 @@
 # AtCoder API(informal)
+- [AtCoder](https://atcoder.jp/)の全コンテスト情報を取得できます
 
 ## [Contest](https://atcoder-api.appspot.com/contests)
 | Field            | Description                                                  |
